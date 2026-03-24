@@ -1,959 +1,249 @@
 // Atmos Weather Tracker
-// Uses Open-Meteo API (free, no key needed) for geocoding + weather data
+// Uses Open-Meteo API (free, no API key needed)
 
 const GEO_URL     = "https://geocoding-api.open-meteo.com/v1/search";
 const WEATHER_URL = "https://api.open-meteo.com/v1/forecast";
-const LS_KEY      = "wt_history_v2";
-const MAX_HIST    = 8;
-const DEBOUNCE_MS = 370;
 
-// Grab all the DOM elements we'll need
-const cityInput        = document.getElementById("cityInput");
-const searchBtn        = document.getElementById("searchBtn");
-const inputClearBtn    = document.getElementById("inputClearBtn");
-const inlineMsg        = document.getElementById("inlineMsg");
-const historyWrap      = document.getElementById("historyWrap");
-const noHistory        = document.getElementById("noHistory");
-const clearHistBtn     = document.getElementById("clearHistBtn");
-const emptyState       = document.getElementById("emptyState");
-const weatherErr       = document.getElementById("weatherErr");
-const weatherRows      = document.getElementById("weatherRows");
-const skeletonRows     = document.getElementById("skeletonRows");
-const consoleBody      = document.getElementById("consoleBody");
-const clearConsoleBtn  = document.getElementById("clearConsoleBtn");
-const autocompleteDrop = document.getElementById("autocompleteDrop");
-const weatherBanner    = document.getElementById("weatherBanner");
-const weatherCanvas    = document.getElementById("weatherCanvas");
-const leafCanvas       = document.getElementById("leafCanvas");
-const lightningOverlay = document.getElementById("lightningOverlay");
-const headerIconPill   = document.getElementById("headerIconPill");
+// DOM elements
+var cityInput       = document.getElementById("cityInput");
+var searchBtn       = document.getElementById("searchBtn");
+var weatherBox      = document.getElementById("weatherBox");
+var historyBox      = document.getElementById("historyBox");
+var consoleBox      = document.getElementById("consoleBox");
+var clearHistBtn    = document.getElementById("clearHistBtn");
+var clearConsoleBtn = document.getElementById("clearConsoleBtn");
 
-let selectedGeo   = null;
-let acActiveIndex = -1;
-let debounceTimer = null;
-let animationId   = null;
-let particles     = [];
-let currentScene  = null;
 
-// Weather canvas setup
-const ctx = weatherCanvas.getContext("2d");
+// ─── CONSOLE LOGGER ─────────────────────────────────────────
 
-function resizeCanvas() {
-  weatherCanvas.width  = window.innerWidth;
-  weatherCanvas.height = window.innerHeight;
-  leafCanvas.width     = window.innerWidth;
-  leafCanvas.height    = window.innerHeight;
-}
-resizeCanvas();
-window.addEventListener("resize", resizeCanvas);
-
-function rnd(min, max) { return Math.random() * (max - min) + min; }
-
-// Map WMO weather codes to scene names for particle animations
-function codeToScene(wmoCode, isDay, temp) {
-  if (!isDay) return "night";
-  if (wmoCode === 0)  return temp > 30 ? "hot" : "sunny";
-  if (wmoCode <= 3)   return "cloudy";
-  if (wmoCode <= 49)  return "fog";
-  if (wmoCode <= 69)  return "rain";
-  if (wmoCode <= 79)  return "snow";
-  if (wmoCode <= 99)  return "storm";
-  return "cloudy";
+function cLog(type, message) {
+  var div = document.createElement("div");
+  div.className = "log " + type;
+  div.innerHTML = '<span class="badge">' + type.toUpperCase() + '</span> ' + message;
+  consoleBox.appendChild(div);
+  consoleBox.scrollTop = consoleBox.scrollHeight;
 }
 
-// Map WMO codes to emoji + readable label
-function codeToCondition(code, isDay) {
-  const d = !!isDay;
-  const map = {
-    0:  { e: d ? "☀️"  : "🌙", t: "Clear Sky" },
-    1:  { e: d ? "🌤️" : "🌙", t: "Mainly Clear" },
-    2:  { e: "⛅",              t: "Partly Cloudy" },
-    3:  { e: "☁️",              t: "Overcast" },
-    45: { e: "🌫️",             t: "Fog" },
-    48: { e: "🌫️",             t: "Icy Fog" },
-    51: { e: "🌦️",             t: "Light Drizzle" },
-    53: { e: "🌦️",             t: "Drizzle" },
-    55: { e: "🌧️",             t: "Dense Drizzle" },
-    61: { e: "🌧️",             t: "Slight Rain" },
-    63: { e: "🌧️",             t: "Moderate Rain" },
-    65: { e: "🌧️",             t: "Heavy Rain" },
-    71: { e: "❄️",              t: "Slight Snowfall" },
-    73: { e: "❄️",              t: "Moderate Snowfall" },
-    75: { e: "❄️",              t: "Heavy Snowfall" },
-    77: { e: "🌨️",             t: "Snow Grains" },
-    80: { e: "🌦️",             t: "Slight Showers" },
-    81: { e: "🌧️",             t: "Showers" },
-    82: { e: "🌧️",             t: "Heavy Showers" },
-    85: { e: "🌨️",             t: "Snow Showers" },
-    86: { e: "🌨️",             t: "Heavy Snow Showers" },
-    95: { e: "⛈️",             t: "Thunderstorm" },
-    96: { e: "⛈️",             t: "Thunderstorm + Hail" },
-    99: { e: "⛈️",             t: "Heavy Thunderstorm" },
-  };
-  const keys = Object.keys(map).map(Number).sort((a, b) => a - b);
-  let best = keys[0];
-  for (const k of keys) { if (code >= k) best = k; }
-  return map[best] || { e: "🌡️", t: "Unknown" };
-}
 
-// Scene-specific banner and orb colors
-const bannerBgMap = {
-  sunny:  "rgba(29,185,84,0.09)",
-  hot:    "rgba(255,140,30,0.12)",
-  cloudy: "rgba(120,140,180,0.10)",
-  fog:    "rgba(140,160,180,0.08)",
-  rain:   "rgba(56,130,255,0.10)",
-  storm:  "rgba(130,80,255,0.12)",
-  snow:   "rgba(180,220,255,0.10)",
-  night:  "rgba(20,30,80,0.20)",
-};
+// ─── GEOCODE CITY NAME → COORDINATES ────────────────────────
 
-const orbPalette = {
-  sunny:  ["#0a1a08", "#0d1e0a", "#080f06"],
-  hot:    ["#1e0e00", "#2a1000", "#0c0500"],
-  cloudy: ["#0c1018", "#14202e", "#080e16"],
-  fog:    ["#0e1016", "#141c24", "#080c12"],
-  rain:   ["#040a18", "#06101e", "#020610"],
-  storm:  ["#080410", "#10081c", "#040210"],
-  snow:   ["#080e18", "#0c1424", "#060c14"],
-  night:  ["#010308", "#03060e", "#010206"],
-};
+async function geocodeCity(city) {
+  cLog("async", 'Geocoding <span class="hl">"' + city + '"</span>...');
 
-// Switch the entire visual theme to match the weather
-function applyScene(scene, emoji) {
-  const [a, b, c] = orbPalette[scene] || orbPalette.cloudy;
-  document.documentElement.style.setProperty("--orb-a", a);
-  document.documentElement.style.setProperty("--orb-b", b);
-  document.documentElement.style.setProperty("--orb-c", c);
-  weatherBanner.style.setProperty("--banner-bg", bannerBgMap[scene] || bannerBgMap.cloudy);
-  headerIconPill.textContent = emoji;
-  startScene(scene);
-  if (scene === "storm") scheduleLightning();
-}
+  var url = GEO_URL + "?name=" + encodeURIComponent(city) + "&count=1&language=en&format=json";
+  var response = await fetch(url);
+  var data = await response.json();
 
-// Each weather particle behaves differently based on the scene
-class Particle {
-  constructor(scene) {
-    this.scene = scene;
-    this.reset(true);
+  if (!data.results || data.results.length === 0) {
+    throw new Error("City not found");
   }
 
-  reset(init = false) {
-    const W = weatherCanvas.width, H = weatherCanvas.height;
-
-    switch (this.scene) {
-      case "rain":
-        this.x   = Math.random() * (W + 200) - 100;
-        this.y   = init ? Math.random() * H : -15;
-        this.vx  = -2.2;
-        this.vy  = 22 + Math.random() * 8;
-        this.len = 18 + Math.random() * 14;
-        this.a   = 0.12 + Math.random() * 0.22;
-        this.w   = 0.7  + Math.random() * 0.6;
-        break;
-
-      case "storm":
-        this.x   = Math.random() * (W + 200) - 100;
-        this.y   = init ? Math.random() * H : -15;
-        this.vx  = -4;
-        this.vy  = 32 + Math.random() * 12;
-        this.len = 24 + Math.random() * 16;
-        this.a   = 0.18 + Math.random() * 0.28;
-        this.w   = 0.9  + Math.random() * 0.8;
-        break;
-
-      case "snow":
-        this.x          = Math.random() * (W + 40) - 20;
-        this.y          = init ? Math.random() * H : -10;
-        this.vx         = -0.4 + Math.random() * 0.8;
-        this.vy         = 0.7  + Math.random() * 1.4;
-        this.r          = 1.5  + Math.random() * 4;
-        this.a          = 0.35 + Math.random() * 0.55;
-        this.wobble      = Math.random() * Math.PI * 2;
-        this.wobbleSpeed = 0.015 + Math.random() * 0.025;
-        break;
-
-      case "sunny":
-      case "hot":
-        this.x       = Math.random() * W;
-        this.y       = Math.random() * H;
-        this.r       = 0.8  + Math.random() * 2.2;
-        this.a       = 0;
-        this.targetA = 0.12 + Math.random() * 0.28;
-        this.phase   = Math.random() * Math.PI * 2;
-        this.speed   = 0.008 + Math.random() * 0.018;
-        break;
-
-      case "cloudy":
-      case "fog":
-        this.x  = init ? Math.random() * W : W + 220;
-        this.y  = 20 + Math.random() * H * 0.45;
-        this.vx = -0.15 - Math.random() * 0.3;
-        this.vy = 0;
-        this.w  = 160 + Math.random() * 220;
-        this.h  = 45  + Math.random() * 70;
-        this.a  = this.scene === "fog"
-          ? 0.04 + Math.random() * 0.07
-          : 0.03 + Math.random() * 0.05;
-        break;
-    }
-  }
-
-  update() {
-    const W = weatherCanvas.width, H = weatherCanvas.height;
-
-    switch (this.scene) {
-      case "rain":
-      case "storm":
-        this.x += this.vx;
-        this.y += this.vy;
-        if (this.y > H + 20) this.reset();
-        break;
-
-      case "snow":
-        this.wobble += this.wobbleSpeed;
-        this.x += this.vx + Math.sin(this.wobble) * 0.55;
-        this.y += this.vy;
-        if (this.y > H + 12) this.reset();
-        if (this.x < -15) this.x = W + 15;
-        break;
-
-      case "sunny":
-      case "hot":
-        this.phase += this.speed;
-        this.a = (Math.sin(this.phase) * 0.5 + 0.5) * this.targetA;
-        break;
-
-      case "cloudy":
-      case "fog":
-        this.x += this.vx;
-        if (this.x < -(this.w + 20)) this.reset();
-        break;
-    }
-  }
-
-  draw() {
-    ctx.save();
-    ctx.globalAlpha = Math.max(0, this.a);
-
-    switch (this.scene) {
-      case "rain":
-      case "storm":
-        ctx.strokeStyle = "rgba(160,200,255,1)";
-        ctx.lineWidth = this.w;
-        ctx.beginPath();
-        ctx.moveTo(this.x, this.y);
-        ctx.lineTo(this.x + this.vx * (this.len / this.vy), this.y + this.len);
-        ctx.stroke();
-        break;
-
-      case "snow":
-        ctx.fillStyle = "#e5f2ff";
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
-        ctx.fill();
-        break;
-
-      case "sunny":
-      case "hot":
-        ctx.fillStyle = this.scene === "hot" ? "#ffcc44" : "#c5ff80";
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
-        ctx.fill();
-        break;
-
-      case "cloudy":
-      case "fog":
-        const g = ctx.createRadialGradient(
-          this.x + this.w / 2, this.y + this.h / 2, 0,
-          this.x + this.w / 2, this.y + this.h / 2, this.w * 0.6
-        );
-        g.addColorStop(0, `rgba(170,190,220,${this.a})`);
-        g.addColorStop(1, "rgba(170,190,220,0)");
-        ctx.fillStyle = g;
-        ctx.fillRect(this.x, this.y, this.w, this.h);
-        break;
-    }
-
-    ctx.restore();
-  }
-}
-
-// Glowing sun in the top right for sunny/hot weather
-function drawSun(hot) {
-  const W  = weatherCanvas.width;
-  const t  = Date.now() * 0.001;
-  const cx = W * 0.84, cy = 90;
-  const baseR  = hot ? 58 : 46;
-  const pulseR = baseR + 22 + Math.sin(t * 1.6) * 9;
-
-  ctx.save();
-
-  const g1 = ctx.createRadialGradient(cx, cy, 0, cx, cy, pulseR);
-  g1.addColorStop(0, hot ? "rgba(255,170,20,0.16)" : "rgba(200,255,100,0.14)");
-  g1.addColorStop(1, "rgba(200,255,100,0)");
-  ctx.fillStyle = g1;
-  ctx.beginPath();
-  ctx.arc(cx, cy, pulseR, 0, Math.PI * 2);
-  ctx.fill();
-
-  const g2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, baseR);
-  g2.addColorStop(0,    hot ? "#fff5b0" : "#e5ffc0");
-  g2.addColorStop(0.45, hot ? "#ffcc30" : "#90e060");
-  g2.addColorStop(1,    "rgba(150,220,80,0)");
-  ctx.fillStyle = g2;
-  ctx.beginPath();
-  ctx.arc(cx, cy, baseR, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.restore();
-}
-
-// Start the weather animation loop for the given scene
-function startScene(scene) {
-  if (animationId) cancelAnimationFrame(animationId);
-  particles = [];
-  currentScene = scene;
-
-  // No particles for "night" — just leaves float in the dark
-  const counts = {
-    rain: 130, storm: 180, snow: 110,
-    sunny: 55, hot: 75,
-    cloudy: 14, fog: 22,
-  };
-
-  const n = counts[scene] || 0;
-  for (let i = 0; i < n; i++) particles.push(new Particle(scene));
-
-  function loop() {
-    ctx.clearRect(0, 0, weatherCanvas.width, weatherCanvas.height);
-    if (scene === "sunny" || scene === "hot") drawSun(scene === "hot");
-    for (const p of particles) { p.update(); p.draw(); }
-    animationId = requestAnimationFrame(loop);
-  }
-
-  loop();
-}
-
-// Random lightning flashes during storms
-function scheduleLightning() {
-  if (currentScene !== "storm") return;
-  const delay = 3500 + Math.random() * 9000;
-  setTimeout(() => {
-    flash(1);
-    setTimeout(() => flash(0), 80);
-    setTimeout(() => { flash(0.6); setTimeout(() => flash(0), 60); }, 140);
-    scheduleLightning();
-  }, delay);
-}
-
-function flash(opacity) {
-  lightningOverlay.style.opacity = opacity;
+  var place = data.results[0];
+  cLog("promise", 'Geocode resolved → <span class="hl">' + place.name + '</span>, ' + place.country);
+  return place;
 }
 
 
-// ─── LEAF PARTICLES ─────────────────────────────────────────────
-// Gentle falling leaves inspired by the Smart Event Dashboard
-
-const lctx = leafCanvas.getContext("2d");
-const leaves = [];
-
-// Draw a single leaf using bezier curves
-function drawLeafShape(context, size) {
-  context.beginPath();
-  context.moveTo(0, 0);
-  context.bezierCurveTo(size * 1.2, -size * 0.8,  size * 2,   -size * 0.2, size * 1.8, size * 0.5);
-  context.bezierCurveTo(size * 1.5,  size * 1.1,  size * 0.4,  size * 0.9, 0, 0);
-  context.fill();
-  context.beginPath();
-  context.moveTo(0, 0);
-  context.lineTo(-size * 0.5, size * 0.3);
-  context.stroke();
-}
-
-class Leaf {
-  constructor(fromTop) {
-    this.x      = rnd(0, leafCanvas.width);
-    this.y      = fromTop ? rnd(-60, -10) : rnd(0, leafCanvas.height);
-    this.size   = rnd(3.5, 7.5);
-    this.vy     = rnd(0.28, 0.65);
-    this.sway   = rnd(0.18, 0.48);
-    this.swAmp  = rnd(18, 48);
-    this.swOff  = rnd(0, Math.PI * 2);
-    this.rot    = rnd(0, Math.PI * 2);
-    this.rotSpd = rnd(-0.008, 0.008);
-    this.life   = fromTop ? 0 : rnd(0.2, 1);
-    this.fadeIn = fromTop;
-    this.t      = 0;
-    const cols  = [[42,90,60],[35,78,52],[55,110,75],[28,62,44],[68,130,90]];
-    const c     = cols[Math.floor(Math.random() * cols.length)];
-    this.cr = c[0]; this.cg = c[1]; this.cb = c[2];
-  }
-
-  step() {
-    this.t++;
-    this.y   += this.vy;
-    this.x   += Math.sin(this.t * this.sway * 0.04 + this.swOff) * 0.55;
-    this.rot += this.rotSpd;
-    if (this.fadeIn && this.life < 1) this.life = Math.min(1, this.life + 0.015);
-  }
-
-  draw() {
-    const topF  = Math.min(1, this.y / (leafCanvas.height * 0.08));
-    const botF  = Math.min(1, (leafCanvas.height - this.y) / (leafCanvas.height * 0.08));
-    const alpha = Math.max(0, Math.min(topF, botF, this.life)) * 0.55;
-    if (alpha < 0.01) return;
-    lctx.save();
-    lctx.translate(this.x, this.y);
-    lctx.rotate(this.rot);
-    lctx.fillStyle   = `rgba(${this.cr},${this.cg},${this.cb},${alpha})`;
-    lctx.strokeStyle = `rgba(${this.cr},${this.cg},${this.cb},${alpha * 0.4})`;
-    lctx.lineWidth   = 0.5;
-    drawLeafShape(lctx, this.size);
-    lctx.restore();
-  }
-
-  offscreen() { return this.y > leafCanvas.height + 40; }
-}
-
-// Seed the screen with some leaves on load
-for (let i = 0; i < 22; i++) {
-  const l = new Leaf(false);
-  l.life = rnd(0.15, 0.9);
-  leaves.push(l);
-}
-
-let leafTimer = 0, leafNext = rnd(60, 120);
-
-function leafLoop() {
-  lctx.clearRect(0, 0, leafCanvas.width, leafCanvas.height);
-
-  leafTimer++;
-  if (leafTimer >= leafNext) {
-    leafTimer = 0;
-    leafNext  = rnd(70, 140);
-    leaves.push(new Leaf(true));
-  }
-
-  for (let i = leaves.length - 1; i >= 0; i--) {
-    leaves[i].step();
-    leaves[i].draw();
-    if (leaves[i].offscreen()) leaves.splice(i, 1);
-  }
-  if (leaves.length > 55) leaves.splice(0, leaves.length - 55);
-
-  requestAnimationFrame(leafLoop);
-}
-leafLoop();
-
-
-// ─── CONSOLE LOGGER ─────────────────────────────────────────────
-// Displays color-coded event loop messages in the bottom panel
-
-function cLog(type, msg) {
-  const line  = document.createElement("div");
-  line.className = "c-line";
-
-  const badge = document.createElement("span");
-  badge.className = `c-badge ${type}`;
-  badge.textContent = type.toUpperCase();
-
-  const text  = document.createElement("span");
-  text.className = "c-text";
-  text.innerHTML  = msg;
-
-  line.appendChild(badge);
-  line.appendChild(text);
-  consoleBody.appendChild(line);
-  requestAnimationFrame(() => { consoleBody.scrollTop = consoleBody.scrollHeight; });
-}
-
-
-// ─── UI STATE HELPERS ────────────────────────────────────────────
-
-function setLoading(on) {
-  searchBtn.disabled = on;
-  cityInput.disabled = on;
-  searchBtn.classList.toggle("loading", on);
-
-  if (on) {
-    emptyState.style.display  = "none";
-    weatherErr.classList.remove("show");
-    weatherRows.classList.remove("show");
-    weatherBanner.classList.remove("show");
-    skeletonRows.classList.add("show");
-  } else {
-    skeletonRows.classList.remove("show");
-  }
-}
-
-function showMsg(type, text) {
-  inlineMsg.textContent = text;
-  inlineMsg.className   = `inline-msg show ${type}`;
-  if (type === "err") {
-    cityInput.classList.add("shake");
-    setTimeout(() => cityInput.classList.remove("shake"), 450);
-  }
-}
-
-function hideMsg() {
-  inlineMsg.className   = "inline-msg";
-  inlineMsg.textContent = "";
-}
-
-function showEmpty() {
-  emptyState.style.display = "flex";
-  weatherErr.classList.remove("show");
-  weatherRows.classList.remove("show");
-  weatherBanner.classList.remove("show");
-  skeletonRows.classList.remove("show");
-}
-
-function showError(msg) {
-  emptyState.style.display = "none";
-  weatherErr.textContent   = "\u26A0 " + msg;
-  weatherErr.classList.add("show");
-  weatherRows.classList.remove("show");
-  weatherBanner.classList.remove("show");
-  skeletonRows.classList.remove("show");
-}
-
-function showWeatherData() {
-  emptyState.style.display = "none";
-  weatherErr.classList.remove("show");
-  skeletonRows.classList.remove("show");
-  weatherBanner.classList.add("show");
-  weatherRows.classList.add("show");
-}
-
-
-// Smoothly counts up from 0 to the target number
-function animateCounter(target, el, suffix) {
-  suffix = suffix || "°C";
-  const dur = 820;
-  const t0  = performance.now();
-
-  function tick(now) {
-    const p    = Math.min((now - t0) / dur, 1);
-    const ease = 1 - Math.pow(1 - p, 3);
-    el.textContent = Math.round(target * ease) + suffix;
-    if (p < 1) requestAnimationFrame(tick);
-    else el.textContent = target + suffix;
-  }
-
-  requestAnimationFrame(tick);
-}
-
-
-// ─── RENDER WEATHER DATA ────────────────────────────────────────
-
-function renderWeather(current, geoMeta, timezone) {
-  const temp      = Math.round(current.temperature_2m);
-  const feelsLike = Math.round(current.apparent_temperature ?? current.temperature_2m);
-  const humidity  = current.relative_humidity_2m;
-  const wind      = current.wind_speed_10m;
-  const wmoCode   = current.weathercode ?? current.weather_code ?? 0;
-  const isDay     = current.is_day ?? 1;
-  const vis       = current.visibility;
-
-  const condition = codeToCondition(wmoCode, isDay);
-  const scene     = codeToScene(wmoCode, !!isDay, temp);
-  const locName   = geoMeta.name;
-  const country   = geoMeta.country;
-
-  applyScene(scene, condition.e);
-
-  // Show the location's local time using its timezone
-  const now = new Date();
-  const tzOptions = timezone ? { timeZone: timezone } : {};
-  const dateStr = now.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric", ...tzOptions });
-  const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", ...tzOptions });
-  const datetimeStr = dateStr + "  •  " + timeStr;
-
-  // Banner section
-  animateCounter(temp, document.getElementById("bannerTemp"));
-  document.getElementById("bannerCondition").textContent = condition.t;
-  document.getElementById("bannerLocation").textContent  = locName + ", " + country;
-  document.getElementById("bannerDatetime").textContent  = datetimeStr;
-
-  // Detail rows
-  document.getElementById("wCity").textContent    = locName + ", " + country;
-  document.getElementById("wTemp").textContent    = temp + "°C";
-  document.getElementById("wWeather").textContent = condition.t;
-
-  if (humidity !== undefined && humidity !== null) {
-    document.getElementById("wHumidity").textContent    = humidity + "%";
-    document.getElementById("humidityFill").style.width = humidity + "%";
-  } else {
-    document.getElementById("wHumidity").textContent = "N/A";
-  }
-
-  document.getElementById("wWind").textContent     = wind !== undefined ? wind + " km/h" : "N/A";
-  document.getElementById("wFeels").textContent    = feelsLike + "°C";
-  document.getElementById("wVis").textContent      = vis !== undefined ? (vis / 1000).toFixed(1) + " km" : "N/A";
-  document.getElementById("wDatetime").textContent = datetimeStr;
-
-  // Region badge
-  const badge = document.getElementById("locBadge");
-  if (geoMeta.admin1) {
-    badge.textContent = geoMeta.admin1;
-    badge.classList.add("show");
-  } else {
-    badge.classList.remove("show");
-  }
-
-  showWeatherData();
-}
-
-
-// ─── AUTOCOMPLETE ───────────────────────────────────────────────
-
-function closeDropdown() {
-  autocompleteDrop.classList.remove("open");
-  autocompleteDrop.innerHTML = "";
-  acActiveIndex = -1;
-}
-
-function renderDropdown(results, query) {
-  autocompleteDrop.innerHTML = "";
-  acActiveIndex = -1;
-
-  if (!results || results.length === 0) {
-    autocompleteDrop.innerHTML =
-      '<div class="ac-empty">No places found for "<strong>' + query + '</strong>"</div>';
-    autocompleteDrop.classList.add("open");
-    return;
-  }
-
-  results.forEach(function(place) {
-    const item = document.createElement("div");
-    item.className = "ac-item";
-
-    // Highlight the matching part of the city name
-    const q  = query.toLowerCase();
-    const n  = place.name.toLowerCase();
-    let hl   = place.name;
-    const mi = n.indexOf(q);
-    if (mi !== -1) {
-      hl = place.name.slice(0, mi)
-        + "<em>" + place.name.slice(mi, mi + query.length) + "</em>"
-        + place.name.slice(mi + query.length);
-    }
-
-    const sub = [place.admin1, place.country].filter(Boolean).join(", ");
-
-    item.innerHTML =
-      '<span class="ac-pin">&#x1F4CD;</span>' +
-      '<div class="ac-info">' +
-        '<div class="ac-name">' + hl + '</div>' +
-        '<div class="ac-sub">' + sub + '</div>' +
-      '</div>' +
-      '<div class="ac-coords">' +
-        place.latitude.toFixed(2) + ', ' + place.longitude.toFixed(2) +
-      '</div>';
-
-    item.addEventListener("mousedown", function(e) {
-      e.preventDefault();
-      selectPlace(place);
-    });
-
-    autocompleteDrop.appendChild(item);
-  });
-
-  autocompleteDrop.classList.add("open");
-}
-
-function setActiveDropdownItem(i) {
-  const items = autocompleteDrop.querySelectorAll(".ac-item");
-  items.forEach(el => el.classList.remove("active"));
-  if (i >= 0 && i < items.length) {
-    items[i].classList.add("active");
-    acActiveIndex = i;
-  }
-}
-
-function selectPlace(place) {
-  selectedGeo = {
-    lat: place.latitude, lon: place.longitude,
-    name: place.name, country: place.country, admin1: place.admin1 || "",
-  };
-
-  cityInput.value = [place.name, place.admin1, place.country].filter(Boolean).join(", ");
-  closeDropdown();
-  toggleClearBtn();
-  cLog("sync",
-    '[GEO SELECTED] <span class="hl">' + place.name + '</span>' +
-    ' — lat: ' + place.latitude.toFixed(4) + ', lon: ' + place.longitude.toFixed(4)
-  );
-  doFetch();
-}
-
-
-// ─── GEOCODING ──────────────────────────────────────────────────
-
-async function geocodeQuery(query) {
-  const url = GEO_URL + "?name=" + encodeURIComponent(query) + "&count=6&language=en&format=json";
-  cLog("async", '[GEOCODE] Searching <span class="hl">"' + query + '"</span>...');
-
-  return fetch(url)
-    .then(r => r.json())
-    .then(d => d.results || [])
-    .catch(function(err) {
-      cLog("error", "[GEOCODE] Network error: " + err.message);
-      return [];
-    });
-}
-
-async function handleAutoComplete(query) {
-  if (query.length < 2) { closeDropdown(); return; }
-
-  autocompleteDrop.innerHTML = '<div class="ac-loading">&#x1F50D; Searching...</div>';
-  autocompleteDrop.classList.add("open");
-
-  try {
-    const results = await geocodeQuery(query);
-    renderDropdown(results, query);
-  } catch (_) {
-    closeDropdown();
-  }
-}
-
-
-// ─── CORE FETCH (geocode → weather) ─────────────────────────────
-
-async function doFetch(fallbackCity) {
-  const query = (fallbackCity || cityInput.value).trim();
-
-  if (!query) {
-    showMsg("err", "\u26A0 Please enter a city, town or locality.");
-    cLog("error", "Validation failed — empty input.");
-    return;
-  }
-
-  cLog("sync", '[CALL STACK] doFetch() entered — query: <span class="hl">"' + query + '"</span>');
-  cLog("sync", "[CALL STACK] Setting loading state synchronously.");
-
-  setLoading(true);
-  hideMsg();
-  closeDropdown();
-
-  // Demonstrate microtask vs macrotask ordering
-  Promise.resolve().then(function() {
-    cLog("micro", "[MICROTASK QUEUE] Promise.resolve().then() — ran before next macrotask.");
-  });
-  setTimeout(function() {
-    cLog("macro", "[TASK QUEUE] setTimeout(0) — macrotask ran after all microtasks.");
-  }, 0);
-
-  cLog("sync", "[CALL STACK] Synchronous code continues after dispatch.");
-
-  // Step 1: figure out coordinates
-  let geo = selectedGeo;
-
-  if (!geo) {
-    try {
-      cLog("async", '[WEB API] Geocode fetch dispatched for <span class="hl">"' + query + '"</span>...');
-      const results = await geocodeQuery(query);
-
-      if (!results || results.length === 0) throw new Error("GEO_NOT_FOUND");
-
-      const best = results[0];
-      geo = {
-        lat: best.latitude, lon: best.longitude,
-        name: best.name, country: best.country, admin1: best.admin1 || "",
-      };
-
-      cLog("success",
-        '[GEOCODE] Resolved \u2192 <span class="hl">' + geo.name + "</span>, " + geo.country +
-        " (" + geo.lat.toFixed(4) + ", " + geo.lon.toFixed(4) + ")"
-      );
-
-    } catch (geoErr) {
-      setLoading(false);
-      if (geoErr.message === "GEO_NOT_FOUND") {
-        showMsg("err", '\u{1F50D} "' + query + '" not found. Try a more specific name.');
-        showError("Location not found.");
-      } else {
-        showMsg("err", "\uD83C\uDF10 Network error \u2014 check your connection.");
-        showError("Network error.");
-      }
-      cLog("error", "[GEOCODE ERROR] " + geoErr.message);
-      cLog("info",  "[FINALLY] Loading reset after geocode failure.");
-      return;
-    }
-  }
-
-  // Step 2: fetch actual weather data
-  const weatherUrl =
-    WEATHER_URL +
-    "?latitude="  + geo.lat +
-    "&longitude=" + geo.lon +
-    "&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,weathercode,wind_speed_10m,visibility" +
+// ─── FETCH WEATHER DATA ─────────────────────────────────────
+
+async function getWeather(lat, lon) {
+  cLog("async", 'Fetching weather for lat: <span class="hl">' + lat.toFixed(2) + '</span>, lon: <span class="hl">' + lon.toFixed(2) + '</span>...');
+
+  var url = WEATHER_URL +
+    "?latitude=" + lat +
+    "&longitude=" + lon +
+    "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,visibility,is_day" +
     "&wind_speed_unit=kmh&timezone=auto";
 
-  cLog("async",
-    '[WEB API] Open-Meteo fetch \u2192 lat: <span class="hl">' + geo.lat.toFixed(4) +
-    '</span>, lon: <span class="hl">' + geo.lon.toFixed(4) + "</span>"
-  );
+  var response = await fetch(url);
+  var data = await response.json();
 
-  try {
-    const response = await fetch(weatherUrl)
-      .then(function(r) {
-        cLog("micro", '[MICROTASK] .then() on weather fetch \u2192 HTTP <span class="hl">' + r.status + "</span>");
-        return r;
-      })
-      .catch(function(netErr) {
-        cLog("error", "[MICROTASK] .catch() \u2192 Network error: " + netErr.message);
-        throw new Error("NETWORK");
-      });
+  cLog("promise", '.then() resolved — HTTP <span class="hl">' + response.status + "</span>");
+  return data;
+}
 
-    cLog("async", "[CALL STACK] await resumed \u2014 weather response received.");
 
-    const data = await response.json();
+// ─── MAP WEATHER CODE TO EMOJI ──────────────────────────────
 
-    if (!response.ok) {
-      throw new Error("API:" + response.status + ":" + (data && data.reason ? data.reason : "Unknown error"));
-    }
+function getEmoji(code, isDay) {
+  if (code === 0)  return isDay ? "☀️" : "🌙";
+  if (code <= 3)   return "⛅";
+  if (code <= 49)  return "🌫️";
+  if (code <= 69)  return "🌧️";
+  if (code <= 79)  return "❄️";
+  if (code <= 99)  return "⛈️";
+  return "🌡️";
+}
 
-    cLog("success", '[SUCCESS] Weather data received for <span class="hl">' + geo.name + "</span> \u2014 rendering UI.");
-    cLog("sync",    "[CALL STACK] Synchronous DOM update begins.");
+function getCondition(code) {
+  if (code === 0)  return "Clear Sky";
+  if (code <= 3)   return "Partly Cloudy";
+  if (code <= 49)  return "Fog";
+  if (code <= 55)  return "Drizzle";
+  if (code <= 69)  return "Rain";
+  if (code <= 79)  return "Snow";
+  if (code <= 99)  return "Thunderstorm";
+  return "Unknown";
+}
 
-    renderWeather(data.current, geo, data.timezone);
 
-    const histLabel = [geo.name, geo.admin1, geo.country].filter(Boolean).join(", ");
-    pushHistory(histLabel, geo);
+// ─── RENDER WEATHER ─────────────────────────────────────────
 
-    selectedGeo = null;
-    cLog("sync", "[CALL STACK] doFetch() complete \u2014 frame popped from stack.");
+function renderWeather(current, place, timezone) {
+  var temp = Math.round(current.temperature_2m);
+  var feelsLike = Math.round(current.apparent_temperature);
+  var humidity = current.relative_humidity_2m;
+  var wind = current.wind_speed_10m;
+  var vis = current.visibility;
+  var code = current.weather_code;
+  var isDay = current.is_day;
 
-  } catch (err) {
-    cLog("error", "[CATCH] " + err.message);
+  var emoji = getEmoji(code, isDay);
+  var condition = getCondition(code);
 
-    if (err.message === "NETWORK" || err.message.indexOf("fetch") !== -1) {
-      showMsg("err", "\uD83C\uDF10 Network error \u2014 check your internet connection.");
-      showError("Network error.");
-    } else if (err.message.indexOf("API:") === 0) {
-      showMsg("err", "\u26A0 Weather data unavailable for this location.");
-      showError("No weather data.");
-    } else {
-      showMsg("err", "\u274C " + err.message);
-      showError("Something went wrong.");
-    }
+  // Get the location's local time
+  var now = new Date();
+  var tzOptions = timezone ? { timeZone: timezone } : {};
+  var dateStr = now.toLocaleDateString("en-US", Object.assign({ weekday: "short", month: "short", day: "numeric" }, tzOptions));
+  var timeStr = now.toLocaleTimeString("en-US", Object.assign({ hour: "2-digit", minute: "2-digit" }, tzOptions));
 
-  } finally {
-    setLoading(false);
-    selectedGeo = null;
-    cLog("info", "[FINALLY] Loading reset \u2014 always runs regardless of outcome.");
+  weatherBox.innerHTML =
+    '<div class="weather-banner">' +
+      '<span class="banner-emoji">' + emoji + '</span>' +
+      '<div class="banner-info">' +
+        '<div class="banner-temp">' + temp + '°C</div>' +
+        '<div class="banner-condition">' + condition + '</div>' +
+        '<div class="banner-location">' + place.name + ', ' + place.country + '</div>' +
+        '<div class="banner-time">' + dateStr + '  •  ' + timeStr + '</div>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="weather-item"><label>📍 City</label><span>' + place.name + ', ' + place.country + '</span></div>' +
+    '<div class="weather-item"><label>🌡️ Temperature</label><span>' + temp + ' °C</span></div>' +
+    '<div class="weather-item"><label>🤒 Feels Like</label><span>' + feelsLike + ' °C</span></div>' +
+    '<div class="weather-item"><label>🌤️ Weather</label><span>' + condition + '</span></div>' +
+    '<div class="weather-item"><label>💧 Humidity</label><span class="humidity-wrap">' + humidity + '% <span class="humidity-bar"><span class="humidity-fill" style="width:' + humidity + '%"></span></span></span></div>' +
+    '<div class="weather-item"><label>💨 Wind Speed</label><span>' + wind + ' km/h</span></div>' +
+    '<div class="weather-item"><label>👁️ Visibility</label><span>' + (vis / 1000).toFixed(1) + ' km</span></div>' +
+    '<div class="weather-item"><label>📅 Local Time</label><span>' + dateStr + ' • ' + timeStr + '</span></div>';
+
+  cLog("sync", "DOM updated — weather rendered.");
+}
+
+
+// ─── SEARCH HISTORY (localStorage) ──────────────────────────
+
+function saveHistory(city) {
+  var history = JSON.parse(localStorage.getItem("weatherHistory")) || [];
+
+  // Remove duplicate
+  history = history.filter(function(c) {
+    return c.toLowerCase() !== city.toLowerCase();
+  });
+
+  // Add to front, keep max 8
+  history.unshift(city);
+  if (history.length > 8) history = history.slice(0, 8);
+
+  localStorage.setItem("weatherHistory", JSON.stringify(history));
+  cLog("info", 'Saved <span class="hl">"' + city + '"</span> to localStorage.');
+  showHistory();
+}
+
+function showHistory() {
+  var history = JSON.parse(localStorage.getItem("weatherHistory")) || [];
+  historyBox.innerHTML = "";
+
+  if (history.length === 0) {
+    historyBox.innerHTML = '<span class="no-history">No searches yet.</span>';
+    return;
   }
-}
 
-
-// ─── SEARCH HISTORY (localStorage) ──────────────────────────────
-
-function getHistory() {
-  try { return JSON.parse(localStorage.getItem(LS_KEY)) || []; }
-  catch (_) { return []; }
-}
-
-function pushHistory(label, geo) {
-  let hist = getHistory();
-  hist = hist.filter(h => h.label.toLowerCase() !== label.toLowerCase());
-  hist.unshift({ label: label, geo: geo });
-  if (hist.length > MAX_HIST) hist = hist.slice(0, MAX_HIST);
-  localStorage.setItem(LS_KEY, JSON.stringify(hist));
-  cLog("info", 'LocalStorage \u2014 <span class="hl">"' + label + '"</span> saved.');
-  renderHistory();
+  history.forEach(function(city) {
+    var btn = document.createElement("button");
+    btn.textContent = city;
+    btn.addEventListener("click", function() {
+      cLog("sync", '[EVENT] History chip clicked → <span class="hl">"' + city + '"</span>');
+      cityInput.value = city;
+      search(city);
+    });
+    historyBox.appendChild(btn);
+  });
 }
 
 function clearHistory() {
-  localStorage.removeItem(LS_KEY);
-  cLog("info", "LocalStorage \u2014 history cleared.");
-  renderHistory();
+  localStorage.removeItem("weatherHistory");
+  cLog("info", "History cleared.");
+  showHistory();
 }
 
-function renderHistory() {
-  const hist = getHistory();
-  historyWrap.innerHTML = "";
 
-  if (hist.length === 0) {
-    historyWrap.appendChild(noHistory);
-    return;
-  }
+// ─── MAIN SEARCH (2-step: geocode → weather) ────────────────
 
-  hist.forEach(function(entry, i) {
-    const chip = document.createElement("button");
-    chip.className = "chip";
-    chip.textContent = entry.label;
-    chip.style.animationDelay = (i * 0.05) + "s";
+async function search(city) {
+  cLog("sync", '[CALL STACK] search("' + city + '") — synchronous start.');
 
-    chip.addEventListener("click", function() {
-      cLog("sync", '[EVENT] History chip clicked \u2192 <span class="hl">"' + entry.label + '"</span>');
-      cityInput.value = entry.label;
-      toggleClearBtn();
-      if (entry.geo) {
-        selectedGeo = entry.geo;
-        cLog("info", '[LOCAL STORAGE] Using saved coords for <span class="hl">' + entry.label + "</span>");
-      }
-      doFetch(entry.label);
-    });
+  weatherBox.innerHTML = '<div class="loading-text">🔍 Fetching weather...</div>';
 
-    historyWrap.appendChild(chip);
+  // Demonstrate microtask vs macrotask
+  Promise.resolve().then(function() {
+    cLog("promise", "[MICROTASK] Promise.resolve().then() — runs before setTimeout.");
   });
+
+  setTimeout(function() {
+    cLog("callback", "[MACROTASK] setTimeout(0) — runs after microtasks.");
+  }, 0);
+
+  cLog("sync", "[CALL STACK] Sync code continues after scheduling tasks.");
+
+  try {
+    // Step 1: Geocode city name to coordinates
+    var place = await geocodeCity(city);
+
+    // Step 2: Fetch weather using coordinates
+    var data = await getWeather(place.latitude, place.longitude);
+    cLog("success", 'Weather data received for <span class="hl">' + place.name + '</span>.');
+
+    renderWeather(data.current, place, data.timezone);
+    saveHistory(place.name);
+
+  } catch (error) {
+    cLog("error", "[CATCH] " + error.message);
+    weatherBox.innerHTML = '<div class="error-text">⚠️ ' + error.message + '</div>';
+
+  } finally {
+    cLog("info", "[FINALLY] Search complete — always runs.");
+  }
 }
 
-function toggleClearBtn() {
-  inputClearBtn.classList.toggle("visible", cityInput.value.length > 0);
-}
 
-
-// ─── EVENT LISTENERS ────────────────────────────────────────────
+// ─── EVENT LISTENERS ────────────────────────────────────────
 
 searchBtn.addEventListener("click", function() {
-  cLog("sync", "[EVENT] 'click' on Search button.");
-  selectedGeo = null;
-  doFetch(cityInput.value.trim());
-});
-
-cityInput.addEventListener("input", function() {
-  toggleClearBtn();
-  selectedGeo = null;
-  const q = cityInput.value.trim();
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(function() { handleAutoComplete(q); }, DEBOUNCE_MS);
+  var city = cityInput.value.trim();
+  if (city) {
+    cLog("sync", "[EVENT] 'click' on Search button.");
+    search(city);
+  }
 });
 
 cityInput.addEventListener("keydown", function(e) {
-  const items = autocompleteDrop.querySelectorAll(".ac-item");
-
-  if (e.key === "ArrowDown") {
-    e.preventDefault();
-    setActiveDropdownItem(Math.min(acActiveIndex + 1, items.length - 1));
-  } else if (e.key === "ArrowUp") {
-    e.preventDefault();
-    setActiveDropdownItem(Math.max(acActiveIndex - 1, 0));
-  } else if (e.key === "Enter") {
-    cLog("sync", "[EVENT] Enter key pressed.");
-    if (acActiveIndex >= 0 && items[acActiveIndex]) {
-      items[acActiveIndex].dispatchEvent(new MouseEvent("mousedown"));
-    } else {
-      selectedGeo = null;
-      doFetch(cityInput.value.trim());
+  if (e.key === "Enter") {
+    var city = cityInput.value.trim();
+    if (city) {
+      cLog("sync", "[EVENT] Enter key pressed.");
+      search(city);
     }
-  } else if (e.key === "Escape") {
-    closeDropdown();
   }
 });
 
-document.addEventListener("click", function(e) {
-  if (!e.target.closest(".search-wrap-outer")) closeDropdown();
-});
-
-inputClearBtn.addEventListener("click", function() {
-  cityInput.value = "";
-  selectedGeo = null;
-  toggleClearBtn();
-  closeDropdown();
-  cityInput.focus();
+document.querySelectorAll(".tip-chip").forEach(function(chip) {
+  chip.addEventListener("click", function() {
+    var city = chip.dataset.city;
+    cityInput.value = city;
+    cLog("sync", '[TIP] Clicked → <span class="hl">"' + city + '"</span>');
+    search(city);
+  });
 });
 
 clearHistBtn.addEventListener("click", function() {
@@ -962,35 +252,15 @@ clearHistBtn.addEventListener("click", function() {
 });
 
 clearConsoleBtn.addEventListener("click", function() {
-  consoleBody.innerHTML = "";
+  consoleBox.innerHTML = "";
   cLog("sync", "Console cleared.");
 });
 
-document.querySelectorAll(".tip-chip").forEach(function(chip) {
-  chip.addEventListener("click", function() {
-    const q = chip.dataset.q;
-    cityInput.value = q;
-    selectedGeo = null;
-    toggleClearBtn();
-    closeDropdown();
-    cLog("sync", '[TIP CHIP] Clicked \u2192 <span class="hl">"' + q + '"</span>');
-    doFetch(q);
-  });
-});
 
+// ─── INIT ───────────────────────────────────────────────────
 
-// ─── INIT ───────────────────────────────────────────────────────
-
-cLog("sync",  "[INIT] Script loaded \u2014 DOM fully parsed.");
-cLog("sync",  "[INIT] Event listeners registered (search, input, keyboard, tips).");
-cLog("info",  "[INIT] Open-Meteo API ready \u2014 no API key required.");
-cLog("async", "[EVENT LOOP] Call stack empty \u2014 idle, awaiting user input...");
-
-renderHistory();
-cLog("info", "[INIT] LocalStorage read \u2014 " +
-  '<span class="hl">' + getHistory().length + "</span> history item(s) loaded.");
-
-showEmpty();
-
-// LEAVES 
-startScene("night");
+cLog("sync", "[INIT] Script loaded — DOM ready.");
+cLog("sync", "[INIT] Event listeners registered.");
+cLog("info", "[INIT] Open-Meteo API ready — no API key needed.");
+cLog("async", "[EVENT LOOP] Call stack empty — awaiting input...");
+showHistory();
