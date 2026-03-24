@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Atmos — a premium weather tracker with live forecasts, dynamic weather animations, and event-loop console." />
+  <title>Atmos Weather Tracker</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <canvas id="weatherCanvas"></canvas>
+  <canvas id="leafCanvas"></canvas>
+  <div id="lightningOverlay" class="lightning-overlay"></div>
+
+  <div class="page">
+
+    <header class="header">
+      <div class="header-logo">
+        <div class="header-icon-pill" id="headerIconPill">🌿</div>
+        <h1 class="header-title">Atmos</h1>
+      </div>
+      <span class="header-sub">Weather Tracker</span>
+    </header>
+
+    <div class="main-grid">
+
+      <!-- Search Panel -->
+      <div class="panel panel-left">
+        <div class="panel-label">Search</div>
+
+        <div class="search-wrap-outer">
+          <div class="search-row">
+            <div class="input-wrap">
+              <span class="input-icon">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              </span>
+              <input type="text" id="cityInput" class="search-input" placeholder="Search City, Town or Locality" autocomplete="off" />
+              <button id="inputClearBtn" class="input-clear-btn" aria-label="Clear">✕</button>
+            </div>
+            <button id="searchBtn" class="search-btn">
+              <span class="btn-text">Search</span>
+              <span class="btn-spinner"></span>
+            </button>
+          </div>
+
+          <div id="autocompleteDrop" class="autocomplete-drop"></div>
+        </div>
+
+        <div class="search-tips">
+          <span class="tip-label">Try:</span>
+          <button class="tip-chip" data-q="London">London</button>
+          <button class="tip-chip" data-q="Tokyo">Tokyo</button>
+          <button class="tip-chip" data-q="New York">New York</button>
+          <button class="tip-chip" data-q="Mumbai">Mumbai</button>
+        </div>
+
+        <div id="inlineMsg" class="inline-msg"></div>
+
+        <div class="panel-label" style="margin-top:18px">Search History</div>
+        <div id="historyWrap" class="history-wrap">
+          <span id="noHistory" class="no-history">No searches yet.</span>
+        </div>
+        <button id="clearHistBtn" class="clear-hist-btn">Clear History</button>
+      </div>
+
+      <!-- Weather Display Panel -->
+      <div class="panel panel-right">
+        <div class="panel-label">Weather Info</div>
+
+        <div id="weatherBanner" class="weather-banner">
+          <span class="w-icon-large" id="bannerIcon">☀️</span>
+          <div class="banner-info">
+            <div class="banner-temp" id="bannerTemp">—</div>
+            <div class="banner-condition" id="bannerCondition">—</div>
+            <div class="banner-location" id="bannerLocation">—</div>
+            <div class="banner-datetime" id="bannerDatetime">—</div>
+          </div>
+        </div>
+
+        <div id="emptyState" class="empty-state">
+          <span class="empty-icon">🌿</span>
+          <p>Search a city to see weather</p>
+        </div>
+
+        <div id="skeletonRows" class="skeleton-rows">
+          <div class="sk-row"><div class="sk-bar" style="width:38%"></div><div class="sk-bar" style="width:22%"></div></div>
+          <div class="sk-row"><div class="sk-bar" style="width:44%"></div><div class="sk-bar" style="width:18%"></div></div>
+          <div class="sk-row"><div class="sk-bar" style="width:32%"></div><div class="sk-bar" style="width:28%"></div></div>
+          <div class="sk-row"><div class="sk-bar" style="width:50%"></div><div class="sk-bar" style="width:16%"></div></div>
+          <div class="sk-row"><div class="sk-bar" style="width:36%"></div><div class="sk-bar" style="width:24%"></div></div>
+        </div>
+
+        <div id="weatherErr" class="weather-error"></div>
+
+        <div id="weatherRows" class="weather-rows">
+          <div class="w-row">
+            <span class="w-key"><span class="w-key-icon">📍</span> Location</span>
+            <span class="w-val-group">
+              <span class="w-val" id="wCity">—</span>
+              <span class="loc-badge" id="locBadge"></span>
+            </span>
+          </div>
+          <div class="w-row">
+            <span class="w-key"><span class="w-key-icon">🌡️</span> Temperature</span>
+            <span class="w-val" id="wTemp">—</span>
+          </div>
+          <div class="w-row">
+            <span class="w-key"><span class="w-key-icon">🌤️</span> Condition</span>
+            <span class="w-val" id="wWeather">—</span>
+          </div>
+          <div class="w-row">
+            <span class="w-key"><span class="w-key-icon">💧</span> Humidity</span>
+            <span class="w-val-group">
+              <span class="w-val" id="wHumidity">—</span>
+              <div class="humidity-bar"><div class="humidity-fill" id="humidityFill"></div></div>
+            </span>
+          </div>
+          <div class="w-row">
+            <span class="w-key"><span class="w-key-icon">💨</span> Wind Speed</span>
+            <span class="w-val" id="wWind">—</span>
+          </div>
+          <div class="w-row">
+            <span class="w-key"><span class="w-key-icon">🤒</span> Feels Like</span>
+            <span class="w-val" id="wFeels">—</span>
+          </div>
+          <div class="w-row">
+            <span class="w-key"><span class="w-key-icon">👁️</span> Visibility</span>
+            <span class="w-val" id="wVis">—</span>
+          </div>
+          <div class="w-row">
+            <span class="w-key"><span class="w-key-icon">📅</span> Date & Time</span>
+            <span class="w-val" id="wDatetime">—</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Event Loop Console -->
+    <div class="console-section">
+      <div class="console-topbar">
+        <div class="c-dots">
+          <span class="cdot r"></span>
+          <span class="cdot y"></span>
+          <span class="cdot g"></span>
+        </div>
+        <span class="console-title">Event Loop Console</span>
+        <button id="clearConsoleBtn" class="c-clear-btn">Clear</button>
+      </div>
+      <div id="consoleBody" class="console-body"></div>
+    </div>
+
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
