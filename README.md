@@ -6,7 +6,7 @@ A weather application built with **HTML**, **CSS**, and **JavaScript** that 
 Features
 --------
 
-*   🔍 **City Search with Autocomplete** — Instant location suggestions as you type
+*   🔍 **City Search** — Instant location
     
 *   🌡️ **Real-Time Weather Data** — Temperature, humidity, wind speed, visibility, and feels-like
     
