@@ -1,12 +1,12 @@
 Windy Weather Tracker
 =====================
 
-A weather application built with **HTML**, **CSS**, and **vanilla JavaScript** that provides real-time weather data using the [Open-Meteo API](https://open-meteo.com/) (free, no API key required).
+A weather application built with **HTML**, **CSS**, and **JavaScript** that provides real-time weather data using the [Open-Meteo API](https://open-meteo.com/) (free, no API key required).
 
 Features
 --------
 
-*   🔍 **City Search with Autocomplete** — Instant location suggestions as you type
+*   🔍 **City Search** — Instant location
     
 *   🌡️ **Real-Time Weather Data** — Temperature, humidity, wind speed, visibility, and feels-like
     
@@ -16,13 +16,11 @@ Features
     
 *   📜 **Search History** — Persisted in LocalStorage with one-click re-search
     
-*   📱 **Responsive Design** — Works on desktop and mobile
-    
 
 Tech Stack
 ----------
 
-*   HTML5, CSS3, Vanilla JavaScript (ES6+)
+*   HTML5, CSS3,JavaScript
     
 *   [Open-Meteo API](https://open-meteo.com/) — Geocoding & weather data
     
