@@ -1,5 +1,4 @@
-// Atmos Weather Tracker
-// Uses Open-Meteo API (free, no API key needed)
+
 
 const GEO_URL     = "https://geocoding-api.open-meteo.com/v1/search";
 const WEATHER_URL = "https://api.open-meteo.com/v1/forecast";

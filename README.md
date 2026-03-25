@@ -1,4 +1,4 @@
-Atmos Weather Tracker
+Windy Weather Tracker
 =====================
 
 A weather application built with **HTML**, **CSS**, and **vanilla JavaScript** that provides real-time weather data using the [Open-Meteo API](https://open-meteo.com/) (free, no API key required).
